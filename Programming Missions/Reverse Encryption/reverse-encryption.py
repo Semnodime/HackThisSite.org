@@ -19,6 +19,7 @@ This is a example of the encrypted text:
 The last one of the serial numbers you decrypted is the answer.
 """
 import hashlib
+import itertools
 
 
 def md5(data):
@@ -28,7 +29,7 @@ def md5(data):
     return m.hexdigest()
 
 
-def eval_cross_total(str_md5):
+def eval_cross_total(str_md5: str):
     """
     Reimplementation of php equivalent:
     //------------------------------------------------------------------------------------
@@ -49,7 +50,7 @@ def eval_cross_total(str_md5):
     return int_total
 
 
-def encrypt_string(str_string, str_password):
+def encrypt_string(str_string: str, str_password: str):
     """
     Reimplementation of php equivalent:
     //------------------------------------------------------------------------------------
@@ -75,12 +76,108 @@ def encrypt_string(str_string, str_password):
     int_md5_total = eval_cross_total(str_password_md5)
     arr_encrypted_values = []
     for i in range(len(str_string)):
-        arr_encrypted_values.append(str(ord(str_string[i]) + int(str_password_md5[i % 32], 16) - int_md5_total))
-        int_md5_total = eval_cross_total((md5(str_string[:i + 1]))[:16] + md5(int_md5_total)[:16])
+        ascii_val = ord(str_string[i])
+        pw_partial = int(str_password_md5[i % 32], 16)
+        arr_encrypted_values.append(str(ascii_val + pw_partial - int_md5_total))
+        int_md5_total = eval_cross_total((md5(str_string[:i + 1]))[:16]) + eval_cross_total(md5(int_md5_total)[:16])
     return ' '.join(arr_encrypted_values)
+
+
+def serials_mask():
+    """ My assumption of what the serials will always look like """
+    return 'xxx-xxx-OEM-xxx-1.1Nxxx-xxx-OEM-' \
+           'xxx-1.1Nxxx-xxx-OEM-xxx-1.1Nxxx-' \
+           'xxx-OEM-xxx-1.1Nxxx-xxx-OEM-xxx-' \
+           '1.1N'
+
+
+def serial_gen(prefix_data='', length=None):
+    """ Generates a string of valid serial data based on prefix and combinations for the places left """
+    small_space = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+    s = small_space
+    base = [s, s, s, '-', s, s, s, '-', 'O', 'E', 'M', '-', s, s, s, '-', '1', '.', '1', '\n']
+
+    # Automatically set length to generate a serial snipped one char longer than the given prefix
+    if not length:
+        length = len(prefix_data) + 1
+
+    # Make it possible to generate longer snippets than one serial key in row by recursive use of itertools
+    if length > len(base):
+        prefix_data_low = prefix_data[:len(base)]
+        prefix_data_high = prefix_data[len(base):]
+
+        for serial_low, serial_high in itertools.product(serial_gen(prefix_data=prefix_data_low, length=len(base)),
+                                                         serial_gen(prefix_data=prefix_data_high,
+                                                                    length=length - len(base))):
+            yield (serial_low + serial_high)
+    else:
+        # Only one serial needs to be generated
+        for pos in range(len(base)):
+            if pos < len(prefix_data):
+                base[pos] = prefix_data[pos]
+
+        if length == 1:
+            # Recursion anchor
+            for serial in base[length - 1]:
+                yield serial
+        else:
+            # Dynamic length of the generator output is achieved by recursion and itertools as well
+            for serial_low, serial_high in itertools.product(serial_gen(prefix_data=prefix_data, length=length - 1),
+                                                             base[length - 1]):
+                yield (serial_low + serial_high)
+
+
+best_length = 0
+
+
+def deobfuscate(obfuscated_serials: str):
+    """ Recursive deobfuscation based on itertools"""
+    encrypted_values = [int(x) for x in obfuscated_serials.split(' ')]
+    print('Attempting to deobfuscate %d values:' % len(encrypted_values), encrypted_values)
+
+    def bruteforce_next_char(int_md5_total, prefix_data=''):
+        # Loop through all possible serial keys but increase length of serial snippet only on success to increase speed
+        for data in serial_gen(prefix_data=prefix_data):
+            i = len(prefix_data)
+            ascii_val = ord(data[i])
+
+            # progress forward if working condition (extracted from the obfuscator) is satisfied
+            # assume encrypted_values[i] <===> ascii_val + pw_partial - int_md5_total:
+            pw_partial = encrypted_values[i] - ascii_val + int_md5_total
+            if pw_partial not in range(16):
+                # print('partial failed for', i, data, pw_partial, int_md5_total)
+                continue
+
+            global best_length
+            if i > best_length:
+                best_length = i
+                print(repr(data))
+
+            if i + 1 < len(encrypted_values):
+                next_int_md5_total = eval_cross_total((md5(data[:i + 1]))[:16]) + eval_cross_total(
+                    md5(int_md5_total)[:16])
+                bruteforce_next_char(prefix_data=data, int_md5_total=next_int_md5_total)
+            else:
+                print('End of obfuscated data, possible deobfuscation:', repr(data))
+
+    for int_md5_total in range(eval_cross_total('f' * len(md5('')))):
+        bruteforce_next_char(prefix_data='', int_md5_total=int_md5_total)
 
 
 if __name__ == '__main__':
     print('This program attempts to output the last serial of ./serials.txt which got obfuscated by ./crypter.php')
+
     # print('A test of the transcribed php5.x.x to python [WORKS]:', encrypt_string('somestring', 'somepassword'))
     # -81 -111 -125 -171 -136 -104 -84 -123 -146 -123
+
+    # Generate some sample obfuscated data to test deobfuscation
+    # with open('serials_example.txt') as f:
+    #     serials_example_file = f.read()
+    # obfuscated = encrypt_string(serials_example_file, 'some_password')
+    # print(obfuscated)
+    # deobfuscate(obfuscated)
+
+    # Load data from serials file which contains the obfuscated data provided by the challenge
+    with open('serials.txt') as f:
+        serials_file = f.read()
+    deobfuscate(serials_file)
